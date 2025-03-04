@@ -1,0 +1,61 @@
+name: Deploy to EC2
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    # AWS 자격 증명 설정
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-northeast-2  # 서울 리전
+
+    # SSH 키 설정
+    - name: Set up SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+    # 테스트 (현재는 주석 처리)
+    # - name: Run tests
+    #   run: |
+    #     # backend tests
+    #     # cd backend && python -m pytest
+    #     # frontend tests
+    #     # cd frontend && npm test
+
+    # 코드 배포 및 도커 실행
+    - name: Deploy to EC2
+      run: |
+        # 기존 폴더 제거 및 새 프로젝트 폴더 생성
+        ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} '
+          if [ -d ~/WhiskyWitty ]; then
+            sudo rm -rf ~/WhiskyWitty
+          fi
+          mkdir -p ~/WhiskyWitty
+        '
+        
+        # 코드 전송
+        scp -r ./* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/WhiskyWitty/
+        
+        # 도커 컨테이너 실행
+        ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} '
+          cd ~/WhiskyWitty
+          sudo docker-compose down
+          sudo docker-compose up --build -d
+        '
+
+    # 배포 완료 알림
+    - name: Deployment Status
+      run: echo "Deployment completed successfully!"

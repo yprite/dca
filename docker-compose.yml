@@ -1,0 +1,10 @@
+services:
+  dca-calculator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "10040:3000"
+    restart: always
+    environment:
+      - NODE_ENV=production
