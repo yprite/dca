@@ -40,18 +40,18 @@ jobs:
       run: |
         # 기존 폴더 제거 및 새 프로젝트 폴더 생성
         ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} '
-          if [ -d ~/WhiskyWitty ]; then
-            sudo rm -rf ~/WhiskyWitty
+          if [ -d ~/dca ]; then
+            sudo rm -rf ~/dca
           fi
-          mkdir -p ~/WhiskyWitty
+          mkdir -p ~/dca
         '
         
         # 코드 전송
-        scp -r ./* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/WhiskyWitty/
+        scp -r ./* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/dca/
         
         # 도커 컨테이너 실행
         ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} '
-          cd ~/WhiskyWitty
+          cd ~/dca
           sudo docker-compose down
           sudo docker-compose up --build -d
         '

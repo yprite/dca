@@ -60,6 +60,7 @@ type InvestmentPeriod = 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly' |
 interface PeriodConfig {
   daysInPeriod: number;
   label: string;
+  calculateNextDate?: (currentDate: Date) => Date;
 }
 
 interface CoinPrice {
@@ -83,12 +84,60 @@ interface CoinInfo {
 }
 
 const PERIOD_CONFIGS: Record<InvestmentPeriod, PeriodConfig> = {
-  daily: { daysInPeriod: 1, label: '매일' },
-  weekly: { daysInPeriod: 7, label: '매주' },
-  biweekly: { daysInPeriod: 14, label: '매 2주' },
-  monthly: { daysInPeriod: 30, label: '매월' },
-  yearly: { daysInPeriod: 365, label: '매년' },
-  custom: { daysInPeriod: 0, label: '커스텀' },
+  daily: { 
+    daysInPeriod: 1, 
+    label: '매일',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setDate(nextDate.getDate() + 1);
+      return nextDate;
+    }
+  },
+  weekly: { 
+    daysInPeriod: 7, 
+    label: '매주',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setDate(nextDate.getDate() + 7);
+      return nextDate;
+    }
+  },
+  biweekly: { 
+    daysInPeriod: 14, 
+    label: '매 2주',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setDate(nextDate.getDate() + 14);
+      return nextDate;
+    }
+  },
+  monthly: { 
+    daysInPeriod: 30, 
+    label: '매월',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setMonth(nextDate.getMonth() + 1);
+      return nextDate;
+    }
+  },
+  yearly: { 
+    daysInPeriod: 365, 
+    label: '매년',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setFullYear(nextDate.getFullYear() + 1);
+      return nextDate;
+    }
+  },
+  custom: { 
+    daysInPeriod: 0, 
+    label: '커스텀',
+    calculateNextDate: (currentDate: Date) => {
+      const nextDate = new Date(currentDate);
+      nextDate.setDate(nextDate.getDate() + customDays);
+      return nextDate;
+    }
+  },
 };
 
 const COINS: CoinInfo[] = [
@@ -223,37 +272,110 @@ export default function Home() {
     setIsLoading(true);
     try {
       const prices = await fetchCoinPrices(selectedCoin.id, startDate, endDate);
-      const daysInPeriod = investmentPeriod === 'custom' ? customDays : PERIOD_CONFIGS[investmentPeriod].daysInPeriod;
+      
+      if (prices.length === 0) {
+        toast({
+          title: '데이터 없음',
+          description: '선택한 기간에 가격 데이터가 없습니다. 다른 기간을 선택해주세요.',
+          status: 'warning',
+          duration: 3000,
+          isClosable: true,
+        });
+        setIsLoading(false);
+        return;
+      }
+      
+      // 시작 날짜와 종료 날짜 사이의 모든 날짜를 생성
+      const allDates: string[] = [];
+      const currentDate = new Date(startDate);
+      const endDateObj = new Date(endDate);
+      
+      while (currentDate <= endDateObj) {
+        allDates.push(currentDate.toISOString().split('T')[0]);
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      // 모든 날짜에 대한 가격 데이터 매핑 (없는 날짜는 이전 날짜의 가격 사용)
+      const priceMap: Record<string, number> = {};
+      let lastPrice = 0;
+      
+      prices.forEach(price => {
+        priceMap[price.date] = price.price;
+        lastPrice = price.price;
+      });
+      
+      // 빠진 날짜에 대해 이전 가격 사용
+      allDates.forEach(date => {
+        if (!priceMap[date] && lastPrice > 0) {
+          priceMap[date] = lastPrice;
+        } else if (priceMap[date]) {
+          lastPrice = priceMap[date];
+        }
+      });
       
       let totalInvestment = 0;
       let totalCoins = 0;
       let investmentDates: string[] = [];
-      let currentDate = new Date(startDate);
-      const calculationEndDate = new Date(endDate);
       let newChartData: ChartData[] = [];
-
-      while (currentDate <= calculationEndDate) {
-        const dateStr = currentDate.toISOString().split('T')[0];
-        const priceData = prices.find(p => p.date === dateStr);
+      
+      // 투자 주기에 따라 투자 날짜 계산
+      let investDate = new Date(startDate);
+      const calculateNextDate = PERIOD_CONFIGS[investmentPeriod].calculateNextDate || 
+        ((date: Date) => {
+          const nextDate = new Date(date);
+          nextDate.setDate(nextDate.getDate() + customDays);
+          return nextDate;
+        });
+      
+      while (investDate <= endDateObj) {
+        const dateStr = investDate.toISOString().split('T')[0];
         
-        if (priceData) {
+        if (priceMap[dateStr]) {
           totalInvestment += periodicInvestment;
-          totalCoins += periodicInvestment / priceData.price;
+          totalCoins += periodicInvestment / priceMap[dateStr];
           investmentDates.push(dateStr);
-
+          
           newChartData.push({
             date: dateStr,
-            portfolioValue: totalCoins * priceData.price,
-            coinPrice: priceData.price,
+            portfolioValue: totalCoins * priceMap[dateStr],
+            coinPrice: priceMap[dateStr],
             investedAmount: totalInvestment,
             coinAmount: totalCoins,
           });
         }
-
-        currentDate.setDate(currentDate.getDate() + daysInPeriod);
+        
+        // 다음 투자 날짜 계산
+        investDate = calculateNextDate(investDate);
       }
-
-      if (newChartData.length === 0) {
+      
+      // 투자 날짜 사이의 날짜에 대한 차트 데이터 추가 (투자는 없지만 가격 변동 반영)
+      const fullChartData: ChartData[] = [];
+      let lastInvestment = 0;
+      let lastCoins = 0;
+      
+      allDates.forEach(date => {
+        const investmentData = newChartData.find(d => d.date === date);
+        
+        if (investmentData) {
+          fullChartData.push(investmentData);
+          lastInvestment = investmentData.investedAmount;
+          lastCoins = investmentData.coinAmount;
+        } else if (priceMap[date]) {
+          // 투자가 없는 날에는 이전 투자 상태 유지하고 가격만 반영
+          fullChartData.push({
+            date: date,
+            portfolioValue: lastCoins * priceMap[date],
+            coinPrice: priceMap[date],
+            investedAmount: lastInvestment,
+            coinAmount: lastCoins,
+          });
+        }
+      });
+      
+      // 날짜순으로 정렬
+      fullChartData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      
+      if (fullChartData.length === 0) {
         toast({
           title: '데이터 없음',
           description: '선택한 기간에 투자 데이터가 없습니다. 다른 기간을 선택해주세요.',
@@ -265,12 +387,12 @@ export default function Home() {
         return;
       }
 
-      const currentPrice = prices[prices.length - 1].price;
+      const currentPrice = priceMap[endDate] || prices[prices.length - 1].price;
       const currentValue = totalCoins * currentPrice;
       const totalProfit = currentValue - totalInvestment;
-      const profitPercentage = (totalProfit / totalInvestment) * 100;
+      const profitPercentage = totalInvestment > 0 ? (totalProfit / totalInvestment) * 100 : 0;
 
-      setChartData(newChartData);
+      setChartData(fullChartData);
       setResult({
         totalInvestment,
         currentValue,
@@ -278,12 +400,13 @@ export default function Home() {
         profitPercentage,
         totalCoins,
         investmentCount: investmentDates.length,
-        averagePrice: totalInvestment / totalCoins,
+        averagePrice: totalCoins > 0 ? totalInvestment / totalCoins : 0,
         currentPrice,
-        startPrice: prices[0].price,
+        startPrice: priceMap[startDate] || prices[0].price,
       });
 
     } catch (error) {
+      console.error('Error calculating DCA:', error);
       toast({
         title: '오류 발생',
         description: '데이터를 가져오는데 실패했습니다.',
@@ -601,7 +724,7 @@ export default function Home() {
                       <StatLabel fontSize={{ base: 'md', md: 'sm' }}>
                         총 투자 금액
                         <Text fontSize="sm" color="gray.600" mt={1}>
-                          (지금까지 투자한 총 금액)
+                          (지금까지 투자한 총 금액 - 총 {result.investmentCount}회 투자)
                         </Text>
                       </StatLabel>
                       <StatNumber fontSize={{ base: '2xl', md: 'xl' }} color="green.600">

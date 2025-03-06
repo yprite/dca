@@ -74,7 +74,7 @@ yarn dev
 3. 브라우저에서 다음 주소로 접속합니다:
 
 ```
-http://localhost:3000
+http://localhost:10040
 ```
 
 ## 기술 스택
