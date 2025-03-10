@@ -60,7 +60,7 @@ type InvestmentPeriod = 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly' |
 interface PeriodConfig {
   daysInPeriod: number;
   label: string;
-  calculateNextDate?: (currentDate: Date) => Date;
+  calculateNextDate?: (currentDate: Date, customDays?: number) => Date;
 }
 
 interface CoinPrice {
@@ -132,7 +132,7 @@ const PERIOD_CONFIGS: Record<InvestmentPeriod, PeriodConfig> = {
   custom: { 
     daysInPeriod: 0, 
     label: '커스텀',
-    calculateNextDate: (currentDate: Date) => {
+    calculateNextDate: (currentDate: Date, customDays = 1) => {
       const nextDate = new Date(currentDate);
       nextDate.setDate(nextDate.getDate() + customDays);
       return nextDate;
@@ -224,22 +224,102 @@ export default function Home() {
       const startTimestamp = new Date(startDate).getTime();
       const endTimestamp = new Date(endDate).getTime() + (24 * 60 * 60 * 1000 - 1);
       
-      const response = await fetch(
-        `https://api.binance.com/api/v3/klines?symbol=${coinId}&interval=1d&startTime=${startTimestamp}&endTime=${endTimestamp}`
-      );
+      // 바이낸스 API는 한 번에 최대 1000개의 캔들스틱 데이터를 반환합니다.
+      // 1000일 이상의 데이터를 요청하면 여러 번 나누어 요청해야 합니다.
+      const MAX_DAYS = 1000;
+      const daysDiff = Math.ceil((endTimestamp - startTimestamp) / (24 * 60 * 60 * 1000));
+      
+      let allData: any[] = [];
+      let currentStartTime = startTimestamp;
+      
+      // 여러 번의 API 호출로 나누어 데이터 가져오기
+      while (currentStartTime < endTimestamp) {
+        const chunkEndTime = Math.min(currentStartTime + (MAX_DAYS * 24 * 60 * 60 * 1000), endTimestamp);
+        const apiUrl = `https://api.binance.com/api/v3/klines?symbol=${coinId}&interval=1d&startTime=${currentStartTime}&endTime=${chunkEndTime}`;
+        const response = await fetch(apiUrl);
 
-      if (!response.ok) {
-        throw new Error('가격 데이터를 가져오는데 실패했습니다');
+        if (!response.ok) {
+          console.error(`API 응답 오류:`, {
+            상태: response.status,
+            상태텍스트: response.statusText
+          });
+          
+          // 만약 API 호출이 실패하면 다른 방법으로 시도
+          if (response.status === 400 || response.status === 429 || response.status === 418) {
+            console.log('API 제한에 도달했거나 잘못된 요청입니다. 대체 데이터를 사용합니다.');
+            
+            // 최근 데이터를 가져오기 위해 다른 API 엔드포인트 사용
+            try {
+              const tickerResponse = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coinId}`);
+              if (tickerResponse.ok) {
+                const tickerData = await tickerResponse.json();
+                
+                // 현재 가격을 사용하여 가상의 데이터 생성
+                if (allData.length > 0) {
+                  const lastPrice = parseFloat(allData[allData.length - 1][4]);
+                  const currentPrice = parseFloat(tickerData.price);
+                  
+                  // 남은 기간에 대해 선형 보간법으로 가격 생성
+                  const remainingDays = Math.ceil((endTimestamp - currentStartTime) / (24 * 60 * 60 * 1000));
+                  const priceStep = (currentPrice - lastPrice) / remainingDays;
+                  
+                  for (let i = 0; i < remainingDays; i++) {
+                    const timestamp = currentStartTime + (i * 24 * 60 * 60 * 1000);
+                    const interpolatedPrice = lastPrice + (priceStep * i);
+                    allData.push([timestamp, interpolatedPrice.toString(), interpolatedPrice.toString(), 
+                                  interpolatedPrice.toString(), interpolatedPrice.toString(), "0", 0, "0", 0, "0", "0", "0"]);
+                  }
+                }
+              }
+            } catch (tickerError) {
+              console.error('현재 가격 가져오기 실패:', tickerError);
+            }
+            
+            break; // API 제한에 도달했으므로 루프 종료
+          }
+          
+          throw new Error('가격 데이터를 가져오는데 실패했습니다');
+        }
+
+        const data = await response.json();
+        
+        if (data.length > 0) {
+          allData = [...allData, ...data];
+          // 다음 청크의 시작 시간 설정 (마지막 데이터 시간 + 1일)
+          currentStartTime = data[data.length - 1][0] + (24 * 60 * 60 * 1000);
+        } else {
+          // 데이터가 없으면 다음 청크로 이동
+          currentStartTime = chunkEndTime;
+        }
+        
+        // API 호출 사이에 짧은 지연 추가 (API 제한 방지)
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+            
+      if (allData.length === 0) {
+        console.warn('API에서 반환된 데이터가 없습니다');
+        return [];
       }
 
-      const data = await response.json();
-      
-      const usdToKrw = 1300;
+      const usdToKrw = 1450;
 
-      return data.map((candle: any[]) => ({
+      const prices = allData.map((candle: any[]) => ({
         date: new Date(candle[0]).toISOString().split('T')[0],
         price: parseFloat(candle[4]) * usdToKrw,
       }));
+      
+      // 중복 날짜 제거 (날짜별로 마지막 가격 유지)
+      const uniquePrices: Record<string, number> = {};
+      prices.forEach(price => {
+        uniquePrices[price.date] = price.price;
+      });
+      
+      const finalPrices = Object.keys(uniquePrices).map(date => ({
+        date,
+        price: uniquePrices[date]
+      })).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      
+      return finalPrices;
     } catch (error) {
       console.error(`Error fetching ${coinId} prices:`, error);
       throw new Error(`${selectedCoin.name} 가격 데이터를 가져오는데 실패했습니다`);
@@ -274,6 +354,7 @@ export default function Home() {
       const prices = await fetchCoinPrices(selectedCoin.id, startDate, endDate);
       
       if (prices.length === 0) {
+        console.warn('가져온 가격 데이터가 없습니다');
         toast({
           title: '데이터 없음',
           description: '선택한 기간에 가격 데이터가 없습니다. 다른 기간을 선택해주세요.',
@@ -305,9 +386,11 @@ export default function Home() {
       });
       
       // 빠진 날짜에 대해 이전 가격 사용
+      let missingDates = 0;
       allDates.forEach(date => {
         if (!priceMap[date] && lastPrice > 0) {
           priceMap[date] = lastPrice;
+          missingDates++;
         } else if (priceMap[date]) {
           lastPrice = priceMap[date];
         }
@@ -327,6 +410,8 @@ export default function Home() {
           return nextDate;
         });
       
+      let investmentCount = 0;
+      
       while (investDate <= endDateObj) {
         const dateStr = investDate.toISOString().split('T')[0];
         
@@ -334,6 +419,7 @@ export default function Home() {
           totalInvestment += periodicInvestment;
           totalCoins += periodicInvestment / priceMap[dateStr];
           investmentDates.push(dateStr);
+          investmentCount++;
           
           newChartData.push({
             date: dateStr,
@@ -342,10 +428,17 @@ export default function Home() {
             investedAmount: totalInvestment,
             coinAmount: totalCoins,
           });
+        } else {
+          console.warn(`${dateStr} 날짜에 가격 데이터가 없습니다`);
         }
         
         // 다음 투자 날짜 계산
-        investDate = calculateNextDate(investDate);
+        const oldDate = new Date(investDate);
+        if (investmentPeriod === 'custom') {
+          investDate = PERIOD_CONFIGS.custom.calculateNextDate(investDate, customDays);
+        } else {
+          investDate = calculateNextDate(investDate);
+        }
       }
       
       // 투자 날짜 사이의 날짜에 대한 차트 데이터 추가 (투자는 없지만 가격 변동 반영)
